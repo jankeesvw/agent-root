@@ -123,7 +123,7 @@ fi
 # it went, which disappears on its own. Closing it outright would be neater,
 # but not every notification daemon removes a toast when the sender asks.
 status=""
-# shellcheck disable=SC2329 # runs from the EXIT trap
+# shellcheck disable=SC2317,SC2329 # runs from the EXIT trap
 report() {
   [ -n "$id" ] || return 0
   local summary
@@ -153,7 +153,7 @@ fi
 # than left waiting for an approval nobody will see the result of.
 pkexec "$@" <&0 &
 child=$!
-# shellcheck disable=SC2329 # runs from the signal traps
+# shellcheck disable=SC2317,SC2329 # runs from the signal traps
 interrupt() {
   kill -TERM "$child" 2>/dev/null || true
   exit "$1"
