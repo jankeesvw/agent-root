@@ -29,46 +29,137 @@ esac
 # so for them the reason comes from the environment.
 if [ -n "${AGENT_ROOT_REASON:-}" ]; then
   reason="$AGENT_ROOT_REASON"
+  # A reason argument as well means the variable was left in the environment,
+  # and the reason would be run as the command.
+  if [ "$#" -ge 2 ] && ! type -P -- "$1" >/dev/null && type -P -- "$2" >/dev/null; then
+    echo "agent-root: AGENT_ROOT_REASON is set, so \"$1\" would run as the command." >&2
+    echo "Set AGENT_ROOT_REASON on the yay or paru command only, never export it." >&2
+    exit 64
+  fi
 else
   reason="${1:-}"
   shift || true
 fi
 
-if [ -z "$reason" ] || [ "$#" -eq 0 ]; then
+if [ -z "$reason" ] || [ "$#" -eq 0 ] || [ -z "$1" ]; then
   usage >&2
   exit 64
 fi
 
+# pkexec would read a leading dash as one of its own options, like --user.
+case "$1" in
+  -*)
+    echo "agent-root: a command can't start with a dash: $1" >&2
+    exit 64
+    ;;
+esac
+
 if ! command -v pkexec >/dev/null 2>&1; then
-  echo "agent-root: pkexec not found, install polkit" >&2
+  echo "agent-root: pkexec not found. agent-root needs Linux with polkit installed." >&2
   exit 127
 fi
+
+# pkexec looks the program up in your PATH. Do that here, so the notification
+# names the same file as the dialog, and refuse a program you can change
+# yourself: approving it approves whatever that file holds when it runs, and a
+# copy of pacman in ~/.local/bin would get the dialog as well.
+if ! program=$(type -P -- "$1"); then
+  echo "agent-root: $1: command not found" >&2
+  exit 127
+fi
+case "$program" in
+  /*) ;;
+  *) program="$PWD/$program" ;;
+esac
+real=$(realpath -- "$program")
+if [ -z "${AGENT_ROOT_ALLOW_USER_PATHS:-}" ] &&
+  { [ -w "$(dirname -- "$program")" ] || [ -w "$real" ] || [ -w "$(dirname -- "$real")" ]; }; then
+  echo "agent-root: refusing to run $real as root, because you can change it yourself." >&2
+  echo "Set AGENT_ROOT_ALLOW_USER_PATHS=1 to run it anyway." >&2
+  exit 64
+fi
+shift
+set -- "$program" "$@"
 
 # The dialog shows the command but has no room for a reason, so that goes in
 # a notification. The hint comes first: notifications are often cut off after
 # a few lines and the command can be long. AGENT_ROOT_HINT replaces it, say
 # with "Touch your security key" when the dialog only mentions a password.
 hint="${AGENT_ROOT_HINT:-Approve it in the system dialog}"
-id=$(notify-send --print-id --urgency=critical --app-name=agent-root \
-  "Root needed: $reason" "$hint"$'\n'"$*" 2>/dev/null || true)
+
+# pkexec cuts a command line longer than 80 characters down to its start and
+# end in the dialog, so then the notification is the only place to read it.
+plain="$*"
+if [ "${#plain}" -gt 80 ]; then
+  hint="$hint. The dialog shows only part of this command"
+fi
+
+# The command is shown quoted where it needs to be, so spaces and empty
+# arguments stay visible, and escaped, because notification daemons render
+# markup in the body.
+quote() {
+  local arg out=""
+  for arg in "$@"; do
+    case "$arg" in
+      "" | *[!A-Za-z0-9_./:=,+@%-]*) out+=" ${arg@Q}" ;;
+      *) out+=" $arg" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+escape() { sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' <<<"$1"; }
+body=$(escape "$hint")$'\n'$(escape "$(quote "$@")")
+
+notify() { notify-send --app-name=agent-root "$@" 2>/dev/null; }
+
+# libnotify before 0.7.10 has no --print-id. Then the notification is sent
+# without it, and there is no id to replace with the outcome later.
+if ! id=$(notify --print-id --urgency=critical "Root needed: $reason" "$body"); then
+  id=""
+  notify --urgency=critical "Root needed: $reason" "$body" || true
+fi
 
 # Once the command is done the notification turns into a short one saying how
 # it went, which disappears on its own. Closing it outright would be neater,
 # but not every notification daemon removes a toast when the sender asks.
+status=""
+# shellcheck disable=SC2329 # runs from the EXIT trap
 report() {
-  local status=$?
   [ -n "$id" ] || return 0
   local summary
-  case "$status" in
+  case "${status:-interrupted}" in
     0) summary="Done: $reason" ;;
     126) summary="Declined: $reason" ;;
+    interrupted) summary="Interrupted: $reason" ;;
     *) summary="Failed (exit $status): $reason" ;;
   esac
-  notify-send --replace-id="$id" --urgency=low --expire-time=5000 --transient \
-    --app-name=agent-root "$summary" >/dev/null 2>&1 || true
+  local args=(--replace-id="$id" --urgency=low --expire-time=5000)
+  # --transient arrived in libnotify 0.7.11, a version after --replace-id.
+  notify "${args[@]}" --transient "$summary" >/dev/null ||
+    notify "${args[@]}" "$summary" >/dev/null || true
 }
 trap report EXIT
 
+# Without a polkit agent in the session, pkexec asks for the password on the
+# terminal instead. An agent can't answer that, so outside a terminal pkexec
+# fails right away (exit 127) rather than waiting forever.
+if ! [ -t 0 ]; then
+  set -- --disable-internal-agent "$@"
+fi
+
 # pkexec starts in /root with a minimal environment, and exits 126 when the
-# dialog is dismissed.
-pkexec "$@"
+# dialog is dismissed. It runs in the background so that when the agent gives
+# up on the command, say after a timeout, the dialog is closed with it rather
+# than left waiting for an approval nobody will see the result of.
+pkexec "$@" <&0 &
+child=$!
+# shellcheck disable=SC2329 # runs from the signal traps
+interrupt() {
+  kill -TERM "$child" 2>/dev/null || true
+  exit "$1"
+}
+trap 'interrupt 129' HUP
+trap 'interrupt 130' INT
+trap 'interrupt 143' TERM
+wait "$child" && status=0 || status=$?
+exit "$status"
