@@ -10,6 +10,8 @@ Here Claude Code was asked why Sidekiq can't connect to Redis, found that nothin
 
 It is one bash script around `pkexec` and `notify-send`, which a Linux desktop already has. No daemon, no allowlist, no config file, and nothing that ever sees or stores your password.
 
+It works on any Linux desktop with polkit. It was made on [Omarchy](https://omarchy.org), which is where the screenshots come from, with its Kanagawa theme.
+
 ## Install
 
 ```bash
@@ -25,7 +27,7 @@ git clone https://github.com/jankeesvw/agent-root.git
 ln -s "$PWD/agent-root/agent-root" ~/.local/bin/agent-root
 ```
 
-It needs polkit and a polkit agent running in your desktop session, which is the thing that draws the dialog. GNOME and KDE have one built in, Omarchy has one in its shell, and on other Hyprland or Sway setups `hyprpolkitagent` or `polkit-gnome` does the job. `notify-send` is optional: without it there is no notification, and the dialog works the same.
+It needs polkit and a polkit agent running in your desktop session, which is the thing that draws the dialog. GNOME and KDE have one built in, [Omarchy](https://omarchy.org) has one in its shell, and on other Hyprland or Sway setups `hyprpolkitagent` or `polkit-gnome` does the job. `notify-send` is optional: without it there is no notification, and the dialog works the same.
 
 ## Tell your agent
 
@@ -57,7 +59,7 @@ Every command asks again. polkit doesn't remember an approval for running a prog
 
 ## Approve with a security key or a fingerprint
 
-The dialog asks for whatever PAM asks for when polkit authenticates. Add `pam_u2f` to `/etc/pam.d/polkit-1` and a touch of your FIDO key is enough; add `pam_fprintd` and your fingerprint is. On Omarchy, `omarchy-setup-security-fido2` and `omarchy-setup-security-fingerprint` do this for you.
+The dialog asks for whatever PAM asks for when polkit authenticates. Add `pam_u2f` to `/etc/pam.d/polkit-1` and a touch of your FIDO key is enough; add `pam_fprintd` and your fingerprint is. On [Omarchy](https://omarchy.org), `omarchy-setup-security-fido2` and `omarchy-setup-security-fingerprint` do this for you.
 
 Not every dialog says so. Some keep showing a password field while the key is blinking, so the notification has a line for it that you can change:
 
