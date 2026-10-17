@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# agent-root - run one command as root after a person approves it in the
+# system's polkit dialog, with a notification that says why it is needed.
+# Made for coding agents, which have no terminal to type a sudo password in.
+#
+# Usage:
+#   agent-root "why root is needed" command [args...]
+#   AGENT_ROOT_REASON="why" yay --sudo agent-root -S package
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: agent-root "why root is needed" command [args...]
+       AGENT_ROOT_REASON="why" command-that-calls-sudo --sudo agent-root ...
+
+Runs the command through pkexec. The polkit dialog shows the command, a
+notification shows the reason, and the command only runs once it is approved.
+EOF
+}
+
+case "${1:-}" in
+  -h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+# Tools like yay and paru call their sudo replacement with the command only,
+# so for them the reason comes from the environment.
+if [ -n "${AGENT_ROOT_REASON:-}" ]; then
+  reason="$AGENT_ROOT_REASON"
+else
+  reason="${1:-}"
+  shift || true
+fi
+
+if [ -z "$reason" ] || [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 64
+fi
+
+if ! command -v pkexec >/dev/null 2>&1; then
+  echo "agent-root: pkexec not found, install polkit" >&2
+  exit 127
+fi
+
+# The dialog shows the command but has no room for a reason, so that goes in
+# a notification. The hint comes first: notifications are often cut off after
+# a few lines and the command can be long. AGENT_ROOT_HINT replaces it, say
+# with "Touch your security key" when the dialog only mentions a password.
+hint="${AGENT_ROOT_HINT:-Approve it in the system dialog}"
+id=$(notify-send --print-id --urgency=critical --app-name=agent-root \
+  "Root needed: $reason" "$hint"$'\n'"$*" 2>/dev/null || true)
+
+# Once the command is done the notification turns into a short one saying how
+# it went, which disappears on its own. Closing it outright would be neater,
+# but not every notification daemon removes a toast when the sender asks.
+report() {
+  local status=$?
+  [ -n "$id" ] || return 0
+  local summary
+  case "$status" in
+    0) summary="Done: $reason" ;;
+    126) summary="Declined: $reason" ;;
+    *) summary="Failed (exit $status): $reason" ;;
+  esac
+  notify-send --replace-id="$id" --urgency=low --expire-time=5000 --transient \
+    --app-name=agent-root "$summary" >/dev/null 2>&1 || true
+}
+trap report EXIT
+
+# pkexec starts in /root with a minimal environment, and exits 126 when the
+# dialog is dismissed.
+pkexec "$@"
